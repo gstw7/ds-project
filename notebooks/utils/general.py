@@ -1,5 +1,13 @@
+import numpy as np
 import pandas as pd
+from boruta import BorutaPy
 from tqdm.notebook import tqdm
+from sklearn.pipeline import Pipeline
+from scipy.stats import chi2_contingency
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.ensemble import RandomForestClassifier
 
 
 def get_data_abono(ano):
@@ -113,3 +121,55 @@ def remove_outlier_IQR(df):
     IQR=Q3-Q1
     df_final=df[~((df<(Q1-1.5*IQR)) | (df>(Q3+1.5*IQR)))]
     return df_final
+
+def encode(data, col, max_val):
+    data[col + '_sin'] = np.sin(2 * np.pi * data[col]/max_val)
+    data[col + '_cos'] = np.cos(2 * np.pi * data[col]/max_val)
+    return data
+
+def chi_squared(df, y, cols = None):
+    pvalues = []
+    logs = []
+    chi2_list = []
+    if cols == None:
+        cat_columns = df.select_dtypes(['object']).columns.tolist()
+    else:
+        cat_columns = cols
+    for cat in tqdm(cat_columns):
+        table = pd.crosstab(df[cat], df[y])
+        if not table[table < 5 ].count().any():
+            table = pd.crosstab(df[cat], df[y])
+            chi2, p, dof, expected = chi2_contingency(table.values) # Função que realiza o teste
+            chi2_list.append(chi2)
+            pvalues.append(p)
+        else:
+            logs.append("A coluna {} não pode ser avaliada. ".format(cat))
+            chi2_list.append(np.nan)
+            pvalues.append(np.nan)   
+    chi2_df = pd.DataFrame({"column":cat_columns, 'p-value':pvalues, 'chi2_value':chi2_list})
+    return  chi2_df, logs
+
+
+def boruta_selector(df, y=None):
+    
+    SEED = 1
+    
+    Y = df[y]
+    df = df.drop(y,axis=1)
+    
+    num_feat = df.select_dtypes(include=['int','float']).columns.tolist()
+    cat_feat = df.select_dtypes(include=['object']).columns.tolist()
+    
+    pipe_num_tree = Pipeline(steps= [('imputer',SimpleImputer(strategy = 'median'))])
+    pipe_cat_tree = Pipeline(steps = [('imputer', SimpleImputer(strategy = 'most_frequent')), ('cat_transformer', OrdinalEncoder())])
+    preprocessor_tree = ColumnTransformer( transformers = [('num_preprocessor',pipe_num_tree, num_feat), ('cat_preprocessor', pipe_cat_tree, cat_feat)])
+    
+    X = preprocessor_tree.fit_transform(df)
+    rf = RandomForestClassifier(n_jobs=-1, class_weight='balanced', max_depth=5)    
+
+    feat_selector = BorutaPy(rf, n_estimators='auto', random_state=SEED, max_iter = 100) # 500 iterações até convergir
+    feat_selector.fit(X,Y)
+    # Terceiro filtro com as features selecionadas pelo boruta
+    cols_drop_boruta= [not x for x in feat_selector.support_.tolist()] # apenas invertendo o vetor de true/false
+    cols_drop_boruta= df.loc[:, cols_drop_boruta].columns.tolist()
+    return cols_drop_boruta
