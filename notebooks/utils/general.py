@@ -1,13 +1,20 @@
+import warnings
 import numpy as np
 import pandas as pd
-from boruta import BorutaPy
+import scikitplot as skplt
 from tqdm.notebook import tqdm
-from sklearn.pipeline import Pipeline
+import matplotlib.pyplot as plt
 from scipy.stats import chi2_contingency
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OrdinalEncoder
-from sklearn.ensemble import RandomForestClassifier
+from yellowbrick.classifier import (
+    ClassificationReport, 
+    ConfusionMatrix, 
+    DiscriminationThreshold, 
+    PrecisionRecallCurve, 
+    ROCAUC
+    )
+
+warnings.filterwarnings('ignore')
+
 
 
 def get_data_abono(ano):
@@ -139,7 +146,7 @@ def chi_squared(df, y, cols = None):
         table = pd.crosstab(df[cat], df[y])
         if not table[table < 5 ].count().any():
             table = pd.crosstab(df[cat], df[y])
-            chi2, p, dof, expected = chi2_contingency(table.values) # Função que realiza o teste
+            chi2, p, dof, expected = chi2_contingency(table.values)
             chi2_list.append(chi2)
             pvalues.append(p)
         else:
@@ -150,26 +157,26 @@ def chi_squared(df, y, cols = None):
     return  chi2_df, logs
 
 
-def boruta_selector(df, y=None):
-    
-    SEED = 1
-    
-    Y = df[y]
-    df = df.drop(y,axis=1)
-    
-    num_feat = df.select_dtypes(include=['int','float']).columns.tolist()
-    cat_feat = df.select_dtypes(include=['object']).columns.tolist()
-    
-    pipe_num_tree = Pipeline(steps= [('imputer',SimpleImputer(strategy = 'median'))])
-    pipe_cat_tree = Pipeline(steps = [('imputer', SimpleImputer(strategy = 'most_frequent')), ('cat_transformer', OrdinalEncoder())])
-    preprocessor_tree = ColumnTransformer( transformers = [('num_preprocessor',pipe_num_tree, num_feat), ('cat_preprocessor', pipe_cat_tree, cat_feat)])
-    
-    X = preprocessor_tree.fit_transform(df)
-    rf = RandomForestClassifier(n_jobs=-1, class_weight='balanced', max_depth=5)    
+def viz_performance(X_train, X_test, y_train, y_test, clf, classes, figsize=(12, 16), cmap='Greens'):
 
-    feat_selector = BorutaPy(rf, n_estimators='auto', random_state=SEED, max_iter = 100) # 500 iterações até convergir
-    feat_selector.fit(X,Y)
-    # Terceiro filtro com as features selecionadas pelo boruta
-    cols_drop_boruta= [not x for x in feat_selector.support_.tolist()] # apenas invertendo o vetor de true/false
-    cols_drop_boruta= df.loc[:, cols_drop_boruta].columns.tolist()
-    return cols_drop_boruta
+    fig, ax = plt.subplots(3, 2, figsize=figsize)
+    
+    lr = clf.fit(X_train, y_train)
+    y_probas = lr.predict_proba(X_test)
+    skplt.metrics.plot_ks_statistic(y_test, y_probas, ax=ax[2,1])
+    
+    grid = [
+        ConfusionMatrix(clf, ax=ax[0, 0], classes=classes, cmap=cmap),
+        ClassificationReport(clf, ax=ax[0, 1], classes=classes, cmap=cmap ),
+        PrecisionRecallCurve(clf, ax=ax[1, 0]),
+        ROCAUC(clf, ax=ax[1, 1], micro=False, macro=False, per_class=True, classes=classes),
+        DiscriminationThreshold(clf, ax=ax[2,0])
+    ]
+    
+    for viz in grid:
+        viz.fit(X_train, y_train)
+        viz.score(X_test, y_test)
+        viz.finalize()
+
+    plt.tight_layout()
+    plt.show()
